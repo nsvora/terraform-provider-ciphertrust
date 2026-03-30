@@ -24,8 +24,9 @@ const (
 	URL_NEW_CLUSTER           = "api/v1/cluster/new"
 	URL_CREATE_CSR            = "api/v1/cluster/csr"
 	URL_SIGN_CERT             = "api/v1/nodes"
+	URL_NODES                 = "api/v1/nodes"
 	URL_CLUSTER_JOIN          = "api/v1/cluster/join"
-	URL_CLUSTER_INFO          = "api/v1/cluster"
+	URL_CLUSTER               = "api/v1/cluster"
 	URL_TRIAL_LICENSE         = "api/v1/licensing/trials"
 	URL_LICENSE               = "api/v1/licensing/licenses"
 	URL_SCP_CONNECTION        = "api/v1/connectionmgmt/services/scp/connections"
@@ -55,4 +56,5 @@ const (
 	URL_OCI_CONNECTION        = "api/v1/connectionmgmt/services/oci/connections"
 	URL_OCI_CONNECTION_TEST   = "api/v1/connectionmgmt/services/oci/connection-test"
 	URL_OCI                   = "api/v1/cckm/oci"
+	URL_SERVICES_STATUS       = "api/v1/system/services/status"
 )

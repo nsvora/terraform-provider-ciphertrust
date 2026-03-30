@@ -13,6 +13,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	common "github.com/ThalesGroup/terraform-provider-ciphertrust/internal/provider/common"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -150,7 +151,7 @@ func (r *resourceCMCluster) Create(ctx context.Context, req resource.CreateReque
 	for _, node := range plan.Nodes {
 		if node.Original.ValueBool() {
 			//Let's check if the cluster already exists for the primary node
-			response, err := r.client.ReadDataByParam(ctx, id, "all", common.URL_CLUSTER_INFO)
+			response, err := r.client.ReadDataByParam(ctx, id, "all", common.URL_CLUSTER)
 			if err != nil {
 				tflog.Debug(ctx, common.ERR_METHOD_END+err.Error()+" [resource_cluster.go -> Create]["+id+"]")
 				resp.Diagnostics.AddError(
@@ -203,6 +204,19 @@ func (r *resourceCMCluster) Create(ctx context.Context, req resource.CreateReque
 					return
 				}
 				plan.NodeCount = types.Int64Value(gjson.Get(response, "nodeCount").Int())
+				plan.ID = types.StringValue(gjson.Get(response, "nodeID").String())
+				plan.NodeId = types.StringValue(gjson.Get(response, "nodeID").String())
+				plan.StatusCode = types.StringValue(gjson.Get(response, "status.code").String())
+				plan.StatusDescription = types.StringValue(gjson.Get(response, "status.description").String())
+
+				// Wait for primary node services to restart after cluster creation
+				if !r.waitForServicesStarted(ctx, r.client, id, &resp.Diagnostics) {
+					return
+				}
+			} else {
+				// The cluster already exists on the primary node, update the plan with existing state
+				plan.NodeCount = types.Int64Value(gjson.Get(response, "nodeCount").Int())
+				plan.ID = types.StringValue(gjson.Get(response, "nodeID").String())
 				plan.NodeId = types.StringValue(gjson.Get(response, "nodeID").String())
 				plan.StatusCode = types.StringValue(gjson.Get(response, "status.code").String())
 				plan.StatusDescription = types.StringValue(gjson.Get(response, "status.description").String())
@@ -347,6 +361,10 @@ func (r *resourceCMCluster) Create(ctx context.Context, req resource.CreateReque
 		}
 	}
 
+	// After all nodes have either created or joined the cluster, wait for services to be fully started before finishing resource creation
+	if !r.waitForServicesStarted(ctx, r.client, id, &resp.Diagnostics) {
+		return
+	}
 	tflog.Trace(ctx, common.MSG_METHOD_END+"[resource_cluster.go -> Create]["+id+"]")
 	diags = resp.State.Set(ctx, plan)
 	resp.Diagnostics.Append(diags...)
@@ -366,7 +384,7 @@ func (r *resourceCMCluster) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	response, err := r.client.ReadDataByParam(ctx, id, "all", common.URL_CLUSTER_INFO)
+	response, err := r.client.ReadDataByParam(ctx, id, "all", common.URL_CLUSTER)
 	if err != nil {
 		tflog.Debug(ctx, common.ERR_METHOD_END+err.Error()+" [resource_cluster.go -> Read]["+id+"]")
 		resp.Diagnostics.AddError(
@@ -404,17 +422,96 @@ func (r *resourceCMCluster) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
-	// Delete existing license
-	url := fmt.Sprintf("%s/%s", r.client.CipherTrustURL, common.URL_CLUSTER_INFO)
-	output, err := r.client.DeleteByURL(ctx, state.NodeId.ValueString(), url)
-	tflog.Trace(ctx, common.MSG_METHOD_END+"[resource_cluster.go -> Delete]["+state.ID.ValueString()+"]["+output+"]")
+	if state.NodeCount.ValueInt64() == 1 {
+		output, err := r.client.DeleteByURL(ctx, state.NodeId.ValueString(), common.URL_CLUSTER)
+		tflog.Trace(ctx, common.MSG_METHOD_END+"[resource_cluster.go -> Delete]["+state.ID.ValueString()+"]["+output+"]")
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error deleting cluster",
+				"Could not delete cluster, unexpected error: "+err.Error(),
+			)
+			return
+		}
+	} else {
+		response, err := r.client.GetAll(ctx, state.ID.ValueString(), common.URL_NODES)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error getting cluster nodes",
+				"Could not get cluster nodes, unexpected error: "+err.Error(),
+			)
+			return
+		}
+
+		nodes := gjson.Parse(response).Array()
+		for _, node := range nodes {
+			nodeId := node.Get("id").String()
+			if nodeId != "" {
+				if nodeId != state.NodeId.ValueString() {
+					// For non-primary nodes, we can directly delete the node from the cluster
+					nodeUrl := fmt.Sprintf("%s/%s", common.URL_NODES, nodeId)
+					output, err := r.client.DeleteByURL(ctx, state.NodeId.ValueString(), nodeUrl)
+					tflog.Trace(ctx, common.MSG_METHOD_END+"[resource_cluster.go -> Delete node]["+nodeId+"]["+output+"]")
+					if err != nil {
+						resp.Diagnostics.AddError(
+							"Error deleting node",
+							fmt.Sprintf("Could not delete node %s, unexpected error: %s", nodeId, err.Error()),
+						)
+						return
+					}
+
+				}
+			}
+		}
+	}
+	// Wait for the primary node to be ready after deletion or removal of other nodes before proceeding with checks and cleanup
+	if !r.waitForServicesStarted(ctx, r.client, state.ID.ValueString(), nil) {
+		return
+	}
+
+	// Check if all nodes have been deleted
+	response, err := r.client.GetAll(ctx, state.ID.ValueString(), common.URL_NODES)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error deleting cluster",
-			"Could not cluster, unexpected error: "+err.Error(),
+			"Error getting cluster nodes",
+			"Could not get cluster nodes, unexpected error: "+err.Error(),
 		)
 		return
 	}
+	nodes := gjson.Parse(response).Array()
+	if len(nodes) > 0 {
+		resp.Diagnostics.AddError(
+			"Error deleting cluster",
+			fmt.Sprintf("Cluster still has %d nodes after deletion attempts", len(nodes)),
+		)
+		return
+	}
+	// Remove the cluster configuration from the removed nodes
+	for _, node := range nodes {
+		nodeId := node.Get("id").String()
+
+		// Create a client for the node being deleted before we delete it
+		deletedNodeHost := node.Get("host").String()
+		deletedNodeURL := "https://" + deletedNodeHost
+		deletedNodeClient, _ := common.NewClient(ctx, nodeId, &deletedNodeURL, &r.client.AuthData.AuthDomain, &r.client.AuthData.Domain, &r.client.AuthData.Username, &r.client.AuthData.Password, true, 180)
+
+		output, err := deletedNodeClient.DeleteByURL(ctx, state.NodeId.ValueString(), common.URL_CLUSTER)
+		tflog.Trace(ctx, common.MSG_METHOD_END+"[resource_cluster.go -> Delete node config]["+nodeId+"]["+output+"]")
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error deleting node configuration",
+				fmt.Sprintf("Could not delete node configuration for node %s, unexpected error: %s", nodeId, err.Error()),
+			)
+			return
+		}
+		// Wait for the deleted node to restart after dismantling the cluster
+		if !r.waitForServicesStarted(ctx, deletedNodeClient, state.ID.ValueString(), &resp.Diagnostics) {
+			return
+		}
+	}
+
+	tflog.Trace(ctx, common.MSG_METHOD_END+"[resource_cluster.go -> Delete]["+state.ID.ValueString()+"]") // Remove resource from state
+	resp.State.RemoveResource(ctx)
+
 }
 
 func (d *resourceCMCluster) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -455,4 +552,68 @@ func extractHost(input string) (string, error) {
 		return input, nil
 	}
 	return "", fmt.Errorf("host must not be empty")
+}
+
+func (r *resourceCMCluster) waitForServicesStarted(ctx context.Context, client *common.Client, id string, diags *diag.Diagnostics) bool {
+	tflog.Trace(ctx, common.MSG_METHOD_START+"[resource_cm_cluster.go -> waitForServicesStarted]["+id+"]")
+	defer tflog.Trace(ctx, common.MSG_METHOD_END+"[resource_cm_cluster.go -> waitForServicesStarted]["+id+"]")
+	var (
+		err      error
+		response string
+	)
+
+	// Give the appliance a moment to initiate the service restart or system reset.
+	// If we check immediately, the API might still return the pre-reboot "started" state.
+	tflog.Debug(ctx, "Waiting 10 seconds for services to begin restarting...")
+	time.Sleep(10 * time.Second)
+
+	// Optional initial check (can silently fail if node is already rebooting)
+	tflog.Debug(ctx, "Attempting to read initial services status")
+	response, err = client.ReadDataByParam(ctx, id, "all", common.URL_SERVICES_STATUS)
+	if err != nil {
+		tflog.Debug(ctx, fmt.Sprintf("Error reading initial services status: %s", err.Error()))
+	}
+
+	status := gjson.Get(response, "status").String()
+
+	numRetries := 360 // 30 minutes at 5 seconds per retry
+	tStart := time.Now()
+	for retry := 0; retry < numRetries && status != "started"; retry++ {
+		time.Sleep(5 * time.Second)
+		if time.Since(tStart).Seconds() > 200 {
+			if err = client.RefreshToken(ctx, id); err != nil {
+				tflog.Debug(ctx, fmt.Sprintf("Error refreshing authentication token (CM might be restarting): %s", err.Error()))
+			}
+			tStart = time.Now()
+		}
+
+		tflog.Debug(ctx, fmt.Sprintf("Attempting to read services status (retry %d)", retry))
+		response, err = client.ReadDataByParam(ctx, id, "all", common.URL_SERVICES_STATUS)
+		if err != nil {
+			// If we receive a 401 Unauthorized, the node has likely reset its credentials
+			// (like when a node is removed from a cluster) and the old token is rejected.
+			// This is a reliable indication that the web server services are back up.
+			if strings.Contains(err.Error(), "status: 401") {
+				status = "started"
+				break
+			}
+			tflog.Trace(ctx, fmt.Sprintf("Error getting services status, retrying: %s", err.Error()))
+			continue
+		}
+
+		status = gjson.Get(response, "status").String()
+		tflog.Trace(ctx, fmt.Sprintf("Services status: %s", status))
+	}
+
+	if status != "started" {
+		msg := fmt.Sprintf("Error waiting for services: status is still '%s' after 30 minutes.", status)
+		tflog.Warn(ctx, msg)
+		if diags != nil {
+			diags.AddError("Timeout waiting for CipherTrust Manager", msg)
+		}
+		return false
+	}
+
+	tflog.Trace(ctx, "[resource_cm_cluster.go -> waitForServicesStarted][response:"+response+"]")
+	return true
 }
