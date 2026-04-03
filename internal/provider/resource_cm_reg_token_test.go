@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"net/url"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -15,7 +14,7 @@ func TestResourceCMRegToken(t *testing.T) {
 				Config: providerConfig + `
 data "ciphertrust_cm_local_ca_list" "groups_local_cas" {
   filters = {
-    subject = "` + url.QueryEscape("/C=US/ST=TX/L=Austin/O=Thales/CN=CipherTrust Root CA") + `"
+    subject = "/C=US/ST=TX/L=Austin/O=Thales/CN=CipherTrust Root CA"
   }
 }
 
@@ -54,7 +53,7 @@ resource "ciphertrust_cm_reg_token" "reg_token" {
 				Config: providerConfig + `
 data "ciphertrust_cm_local_ca_list" "groups_local_cas" {
   filters = {
-    subject = "` + url.QueryEscape("/C=US/ST=TX/L=Austin/O=Thales/CN=CipherTrust Root CA") + `"
+    subject = "/C=US/ST=TX/L=Austin/O=Thales/CN=CipherTrust Root CA"
   }
 }
 output "casList" {

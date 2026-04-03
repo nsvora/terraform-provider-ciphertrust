@@ -215,7 +215,6 @@ func (r *resourceGCPConnection) Read(ctx context.Context, req resource.ReadReque
 	getGcpParamsFromResponse(response, &resp.Diagnostics, &state)
 	// required parameters are fetched separately
 	state.Name = types.StringValue(gjson.Get(response, "name").String())
-	state.KeyFile = types.StringValue(gjson.Get(response, "keyFile").String())
 
 	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)

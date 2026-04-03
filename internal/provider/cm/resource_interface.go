@@ -151,6 +151,7 @@ func (r *resourceCMInterface) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"name": schema.StringAttribute{
 				Optional:    true,
+				Computed:    true,
 				Description: "The name of the interface. Not valid for interface_type nae.",
 			},
 			"network_interface": schema.StringAttribute{
@@ -380,7 +381,7 @@ func (r *resourceCMInterface) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	response, err := r.client.PostDataV2(ctx, id, common.URL_DOMAIN, payloadJSON)
+	response, err := r.client.PostDataV2(ctx, id, common.URL_INTERFACE, payloadJSON)
 	if err != nil {
 		tflog.Debug(ctx, common.ERR_METHOD_END+err.Error()+" [resource_interface.go -> Create]["+id+"]")
 		resp.Diagnostics.AddError(
@@ -415,7 +416,7 @@ func (r *resourceCMInterface) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	response, err := r.client.ReadDataByParam(ctx, id, state.Name.ValueString(), common.URL_DOMAIN)
+	response, err := r.client.ReadDataByParam(ctx, id, state.Name.ValueString(), common.URL_INTERFACE)
 	if err != nil {
 		tflog.Debug(ctx, common.ERR_METHOD_END+err.Error()+" [resource_interface.go -> Read]["+id+"]")
 		resp.Diagnostics.AddError(

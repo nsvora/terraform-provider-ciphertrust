@@ -57,6 +57,18 @@ func (d *dataSourceGroups) Read(ctx context.Context, req datasource.ReadRequest,
 	tflog.Trace(ctx, common.MSG_METHOD_START+"[data_source_cm_groups.go -> Read]["+id+"]")
 	var state CMGroupsDataSourceModelTFSDK
 
+	//Read config first so Filters gets its type info populated
+	diags := req.Config.Get(ctx, &state)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// If filters aren't set in config, initialize it as typed null
+	if state.Filters.IsNull() || state.Filters.IsUnknown() {
+		state.Filters = types.MapNull(types.StringType)
+	}
+
 	jsonStr, err := d.client.GetAll(ctx, id, common.URL_GROUP)
 	if err != nil {
 		tflog.Debug(ctx, common.ERR_METHOD_END+err.Error()+" [data_source_cm_groups.go -> Read]["+id+"]")
@@ -68,31 +80,21 @@ func (d *dataSourceGroups) Read(ctx context.Context, req datasource.ReadRequest,
 	}
 
 	groups := []CMGroupJSON{}
-
-	err = json.Unmarshal([]byte(jsonStr), &groups)
-	if err != nil {
+	if err := json.Unmarshal([]byte(jsonStr), &groups); err != nil {
 		tflog.Debug(ctx, common.ERR_METHOD_END+err.Error()+" [data_source_cm_groups.go -> Read]["+id+"]")
-		resp.Diagnostics.AddError(
-			"Unable to read groups from CM",
-			err.Error(),
-		)
+		resp.Diagnostics.AddError("Unable to read groups from CM", err.Error())
 		return
 	}
 
 	for _, group := range groups {
-		groupState := CMGroupsListModelTFSDK{
+		state.Groups = append(state.Groups, CMGroupsListModelTFSDK{
 			Name: types.StringValue(group.Name),
-		}
-
-		state.Groups = append(state.Groups, groupState)
+		})
 	}
 
 	tflog.Trace(ctx, common.MSG_METHOD_END+"[data_source_cm_groups.go -> Read]["+id+"]")
-	diags := resp.State.Set(ctx, &state)
+	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 }
 
 func (d *dataSourceGroups) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
