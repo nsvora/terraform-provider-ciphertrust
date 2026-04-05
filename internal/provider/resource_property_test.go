@@ -13,7 +13,7 @@ func TestResourceCMProperty(t *testing.T) {
 			{
 				Config: providerConfig + `
 resource "ciphertrust_property" "property_1" {
-    name = "HIDE_COMPOSITE_KEY"
+    name = "ALLOW_UNKNOWN_FIELDS"
     value = "false"
 }
 `,
@@ -23,7 +23,7 @@ resource "ciphertrust_property" "property_1" {
 			{
 				Config: providerConfig + `
 resource "ciphertrust_property" "property_1" {
-    name = "HIDE_COMPOSITE_KEY"
+    name = "ALLOW_UNKNOWN_FIELDS"
     value = "true"
 }
 `,
